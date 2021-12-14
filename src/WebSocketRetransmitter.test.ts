@@ -1,7 +1,7 @@
 import ReconnectingWebsocket from 'reconnecting-websocket'
 import { WebSocketRetransmitter, RETRANSMIT_MSG_TYPE } from './WebSocketRetransmitter'
 
-describe('retransmitter', () => {
+describe('WebSocketRetransmitter', () => {
   let mockWebSocket: ReconnectingWebsocket
   let onReceiveCallback: jest.Mock
   let retransmitter: WebSocketRetransmitter
@@ -50,7 +50,7 @@ describe('retransmitter', () => {
     expect(mockWebSocket.send).lastCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0, 5]))
   })
 
-  test('it sends a handshake and buffered data after the websocket is opened', () => {
+  test('it sends a handshake and previously buffered data after the websocket is opened', () => {
     // given a closed websocket
 
     // when data is sent before websocket is opened
@@ -96,7 +96,7 @@ describe('retransmitter', () => {
   })
 
   // it can ignore retransmits it has already seen
-  test('it retransmits unacknowledged data after disconnect', () => {
+  test('it receives unacknowledged data after disconnect', () => {
     // given a closed websocket
 
     // when websocket is opened and a serial and data is received
