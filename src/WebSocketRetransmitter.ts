@@ -1,4 +1,7 @@
-import ReconnectingWebsocket from 'reconnecting-websocket'
+export const enum ReadyState {
+  OPEN = 1,
+  CLOSED = 3,
+}
 
 export const enum RETRANSMIT_MSG_TYPE {
   INITIAL_SERIAL = 1,
@@ -6,23 +9,66 @@ export const enum RETRANSMIT_MSG_TYPE {
   ACK,
 }
 
+export const defaultMaxBufferSize = 100000
+export const defaultMaxUnacknowledgedMessages = 100
+export const defaultMaxTimeMs = 10000
+
 export class WebSocketRetransmitter {
   private pendingAckMessages: Uint8Array[] = []
   private receiveSerial = 0
   private processedSerial = 0
   private bufferLowestSerial = 0
+
   private unacknowledgedSize = 0
+  private unacknowledgedMessages = 0
+  private unacknowledgedTimoutTask?: ReturnType<typeof setTimeout>
+
+  private ws?: WebSocket
 
   constructor(
-    private ws: ReconnectingWebsocket,
     private readonly onReceive: (data: Uint8Array) => void,
-    maxMsgBufferSize = 50000,
-  ) {
-    ws.onopen = () => {
-      ws.send(new Uint32Array([RETRANSMIT_MSG_TYPE.INITIAL_SERIAL, this.bufferLowestSerial]))
-      this.pendingAckMessages.forEach((msg) => ws.send(msg))
+    private readonly ackTreshold: { maxBufferSize: number; maxUnacknowledgedMessages: number; maxTimeMs: number } = {
+      maxBufferSize: defaultMaxBufferSize,
+      maxUnacknowledgedMessages: defaultMaxUnacknowledgedMessages,
+      maxTimeMs: defaultMaxTimeMs,
+    },
+  ) {}
+
+  private sendAck() {
+    if (this.ws && this.ws.readyState === ReadyState.OPEN) {
+      this.ws.send(new Uint32Array([RETRANSMIT_MSG_TYPE.ACK, this.processedSerial]))
+      this.unacknowledgedSize = 0
+      this.unacknowledgedMessages = 0
+      this.cancelUnacknowledgedTimoutTask()
     }
-    ws.onmessage = (event) => {
+  }
+
+  private ensureUnacknowledgedTimoutTask() {
+    if (this.unacknowledgedTimoutTask === undefined) {
+      this.unacknowledgedTimoutTask = setTimeout(() => {
+        this.unacknowledgedTimoutTask = undefined
+        this.sendAck()
+      })
+    }
+  }
+
+  private cancelUnacknowledgedTimoutTask() {
+    if (this.unacknowledgedTimoutTask) {
+      clearTimeout(this.unacknowledgedTimoutTask)
+      this.unacknowledgedTimoutTask = undefined
+    }
+  }
+
+  useWebSocket(webSocket: WebSocket): void {
+    if (this.ws) {
+      this.ws.onopen = null
+      this.ws.onmessage = null
+    }
+    webSocket.onopen = () => {
+      webSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.INITIAL_SERIAL, this.bufferLowestSerial]))
+      this.pendingAckMessages.forEach((msg) => webSocket.send(msg))
+    }
+    webSocket.onmessage = (event) => {
       const data = event.data as ArrayBuffer
       const typeId = new Uint32Array(data, 0, 1)[0]
 
@@ -38,9 +84,15 @@ export class WebSocketRetransmitter {
           this.processedSerial = this.receiveSerial
         }
         this.unacknowledgedSize += data.byteLength
-        if (this.unacknowledgedSize > maxMsgBufferSize) {
-          ws.send(new Uint32Array([RETRANSMIT_MSG_TYPE.ACK, this.processedSerial]))
-          this.unacknowledgedSize = 0
+        this.unacknowledgedMessages++
+
+        this.ensureUnacknowledgedTimoutTask()
+
+        if (
+          this.unacknowledgedSize > this.ackTreshold.maxBufferSize ||
+          this.unacknowledgedMessages > this.ackTreshold.maxUnacknowledgedMessages
+        ) {
+          this.sendAck()
         }
         return
       }
@@ -55,6 +107,8 @@ export class WebSocketRetransmitter {
         return
       }
     }
+
+    this.ws = webSocket
   }
 
   send(messageBody: Uint8Array): void {
@@ -63,9 +117,8 @@ export class WebSocketRetransmitter {
     message.set(messageBody, Uint32Array.BYTES_PER_ELEMENT)
 
     this.pendingAckMessages.push(message)
-
-    if (this.ws.readyState === ReconnectingWebsocket.OPEN) {
-      this.ws.send(new Uint8Array(message))
+    if (this.ws && this.ws.readyState === ReadyState.OPEN) {
+      this.ws.send(message)
     }
   }
 }

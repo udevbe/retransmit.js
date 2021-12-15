@@ -1,30 +1,37 @@
-import ReconnectingWebsocket from 'reconnecting-websocket'
-import { WebSocketRetransmitter, RETRANSMIT_MSG_TYPE } from './WebSocketRetransmitter'
+import {
+  WebSocketRetransmitter,
+  RETRANSMIT_MSG_TYPE,
+  defaultMaxBufferSize,
+  defaultMaxUnacknowledgedMessages,
+  defaultMaxTimeMs,
+  ReadyState,
+} from './WebSocketRetransmitter'
 
 describe('WebSocketRetransmitter', () => {
-  let mockWebSocket: ReconnectingWebsocket
+  let mockWebSocket: WebSocket
   let onReceiveCallback: jest.Mock
   let retransmitter: WebSocketRetransmitter
 
   function openWebSocket() {
-    mockWebSocket.readyState = ReconnectingWebsocket.OPEN
-    mockWebSocket.onopen(undefined)
+    mockWebSocket.readyState = ReadyState.OPEN
+    mockWebSocket.onopen()
   }
 
   function closeWebSocket() {
-    mockWebSocket.readyState = ReconnectingWebsocket.CLOSED
+    mockWebSocket.readyState = ReadyState.CLOSED
   }
 
   beforeEach(() => {
     const MockReconnectingWebSocket = jest.fn().mockImplementation(() => ({
       send: jest.fn(),
-      readyState: ReconnectingWebsocket.CLOSED,
+      readyState: ReadyState.CLOSED,
     }))
 
     mockWebSocket = new MockReconnectingWebSocket()
 
     onReceiveCallback = jest.fn()
-    retransmitter = new WebSocketRetransmitter(mockWebSocket, onReceiveCallback)
+    retransmitter = new WebSocketRetransmitter(onReceiveCallback)
+    retransmitter.useWebSocket(mockWebSocket)
   })
 
   test('it sends a handshake after the websocket is opened', () => {
@@ -162,7 +169,6 @@ describe('WebSocketRetransmitter', () => {
     expect(mockWebSocket.send).lastCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0, 7]))
   })
 
-  // it sends an acknowledgement after enough bytes are sent
   test('it sends an acknowledgement after enough bytes are sent', () => {
     // given a closed websocket
 
@@ -174,7 +180,7 @@ describe('WebSocketRetransmitter', () => {
     expect(mockWebSocket.send).toHaveBeenCalledTimes(1) // just the serial
 
     // and when cumulative received message size threshold is crossed
-    const mylongmessage = new Uint8Array(20000) // more then 1/3th of the buffer, less then 1/2'th
+    const mylongmessage = new Uint8Array(Math.ceil(defaultMaxBufferSize / 2.5)) // more then 1/3th of the buffer, less then 1/2'th
     mylongmessage.set(new Uint8Array(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 1, 2, 3, 4, 5]).buffer), 0)
 
     mockWebSocket.onmessage({ data: mylongmessage.buffer } as MessageEvent)
@@ -189,4 +195,58 @@ describe('WebSocketRetransmitter', () => {
     mockWebSocket.onmessage({ data: mylongmessage.buffer } as MessageEvent)
     expect(mockWebSocket.send).toHaveBeenCalledTimes(2) // serial + only one ACK
   })
+
+  test('it sends an acknowledgement after enough messages are sent', () => {
+    // given a closed websocket
+
+    // when websocket is opened and serial is received
+    openWebSocket()
+    mockWebSocket.onmessage({ data: new Uint32Array([RETRANSMIT_MSG_TYPE.INITIAL_SERIAL, 0]).buffer } as MessageEvent)
+
+    // then only our own serial is sent
+    expect(mockWebSocket.send).toHaveBeenCalledTimes(1) // just the serial
+
+    // and when cumulative received message count threshold is crossed
+    for (let i = 0; i < defaultMaxUnacknowledgedMessages; i++) {
+      mockWebSocket.onmessage({ data: new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, i]).buffer } as MessageEvent)
+    }
+    expect(mockWebSocket.send).toHaveBeenCalledTimes(1) // still just the serial
+
+    mockWebSocket.onmessage({ data: new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 123]).buffer } as MessageEvent)
+
+    // then a single ack is sent
+    expect(mockWebSocket.send).toHaveBeenCalledTimes(2) // serial + ACK
+    expect(mockWebSocket.send).lastCalledWith(
+      new Uint32Array([RETRANSMIT_MSG_TYPE.ACK, defaultMaxUnacknowledgedMessages + 1]),
+    )
+    mockWebSocket.onmessage({ data: new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 123]).buffer } as MessageEvent)
+    expect(mockWebSocket.send).toHaveBeenCalledTimes(2) // serial + only one ACK
+  })
+
+  test(
+    'it sends an acknowledgement after enough time has passed',
+    async () => {
+      // given a closed websocket
+
+      // when websocket is opened and serial is received
+      openWebSocket()
+      mockWebSocket.onmessage({ data: new Uint32Array([RETRANSMIT_MSG_TYPE.INITIAL_SERIAL, 0]).buffer } as MessageEvent)
+
+      // then only our own serial is sent
+      expect(mockWebSocket.send).toHaveBeenCalledTimes(1) // just the serial
+
+      // and when cumulative received message count threshold is crossed
+      mockWebSocket.onmessage({ data: new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 123]).buffer } as MessageEvent)
+      expect(mockWebSocket.send).toHaveBeenCalledTimes(1) // still just the serial
+
+      await new Promise((resolve) => setTimeout(resolve, defaultMaxTimeMs + 100))
+
+      // then a single ack is sent
+      expect(mockWebSocket.send).toHaveBeenCalledTimes(2) // serial + ACK
+      expect(mockWebSocket.send).lastCalledWith(new Uint32Array([RETRANSMIT_MSG_TYPE.ACK, 1]))
+      mockWebSocket.onmessage({ data: new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 123]).buffer } as MessageEvent)
+      expect(mockWebSocket.send).toHaveBeenCalledTimes(2) // serial + only one ACK
+    },
+    defaultMaxTimeMs + 1000,
+  )
 })
