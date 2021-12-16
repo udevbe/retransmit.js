@@ -1,1 +1,1 @@
-export { WebSocketRetransmitter } from './WebSocketRetransmitter'
+export { RetransmittingWebSocket } from './RetransmittingWebSocket'
