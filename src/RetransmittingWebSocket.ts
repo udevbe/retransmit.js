@@ -137,10 +137,16 @@ export class RetransmittingWebSocket {
   /**
    * Enqueue specified data to be transmitted to the server over the WebSocket connection
    */
-  send(messageBody: Uint8Array): void {
-    const message = new Uint8Array(Uint32Array.BYTES_PER_ELEMENT + messageBody.length)
+  send(messageBody: ArrayBuffer | ArrayBufferView): void {
+    const message = new Uint8Array(Uint32Array.BYTES_PER_ELEMENT + messageBody.byteLength)
     new Uint32Array(message.buffer, 0, 1)[0] = RETRANSMIT_MSG_TYPE.DATA
-    message.set(messageBody, Uint32Array.BYTES_PER_ELEMENT)
+
+    message.set(
+      ArrayBuffer.isView(messageBody)
+        ? new Uint8Array(messageBody.buffer, messageBody.byteOffset, messageBody.byteLength)
+        : new Uint8Array(messageBody),
+      Uint32Array.BYTES_PER_ELEMENT,
+    )
 
     this.pendingAckMessages.push(message)
     if (this.ws && this.ws.readyState === ReadyState.OPEN) {
