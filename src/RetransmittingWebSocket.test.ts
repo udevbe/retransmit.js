@@ -24,7 +24,7 @@ describe('WebSocketRetransmitter', () => {
     serverWebSocketOpen = new Promise<WebSocket>((resolve) => {
       wss.on('connection', (serverWebSocket) => {
         serverWebSocket.onmessage = (event) => {
-          serverReceiveCallback(new Uint8Array(event.data as ArrayBuffer))
+          serverReceiveCallback(typeof event.data === 'string' ? event.data : new Uint8Array(event.data as ArrayBuffer))
         }
         resolve(serverWebSocket)
       })
@@ -53,7 +53,7 @@ describe('WebSocketRetransmitter', () => {
     retransmittingWebSocket = new RetransmittingWebSocket()
     receiveCallback = jest.fn()
     retransmittingWebSocket.onmessage = (event) => {
-      receiveCallback(new Uint8Array(event.data))
+      receiveCallback(typeof event.data === 'string' ? event.data : new Uint8Array(event.data as ArrayBuffer))
     }
 
     serverReceiveCallback = jest.fn()
@@ -93,6 +93,22 @@ describe('WebSocketRetransmitter', () => {
     expect(serverReceiveCallback).lastCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0, 5]))
   })
 
+  test('it sends a handshake and string data after the websocket is opened', async () => {
+    // given a closed websocket
+
+    // when the websocket is opened and data is sent
+    openRetransmittingWebSocket()
+    retransmittingWebSocket.send('test123')
+    await serverWebSocketOpen
+    await someTime()
+
+    // then we get the encoded data sent out
+    expect(serverReceiveCallback).toHaveBeenCalledTimes(2)
+    expect(serverReceiveCallback).lastCalledWith(
+      new Uint8Array([RETRANSMIT_MSG_TYPE.DATA_STRING, 0, 0, 0, ...new TextEncoder().encode('test123')]),
+    )
+  })
+
   test('it sends a handshake and previously buffered data after the websocket is opened', async () => {
     // given a closed websocket
 
@@ -120,6 +136,23 @@ describe('WebSocketRetransmitter', () => {
     // then a handshake and data is received
     expect(receiveCallback).toHaveBeenCalledTimes(1)
     expect(receiveCallback).lastCalledWith(new Uint8Array(new Uint32Array([5]).buffer))
+  })
+
+  test('it receives a handshake and string data after the websocket is opened', async () => {
+    // given a closed websocket
+
+    //when websocket is opened and data is received
+    openRetransmittingWebSocket()
+    const serverWebSocket = await serverWebSocketOpen
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.INITIAL_SERIAL, 0]))
+    serverWebSocket.send(
+      new Uint8Array([RETRANSMIT_MSG_TYPE.DATA_STRING, 0, 0, 0, ...new TextEncoder().encode('test123')]),
+    )
+    await someTime()
+
+    // then a handshake and data is received
+    expect(receiveCallback).toHaveBeenCalledTimes(1)
+    expect(receiveCallback).lastCalledWith('test123')
   })
 
   test('it retransmits unacknowledged data after disconnect', async () => {

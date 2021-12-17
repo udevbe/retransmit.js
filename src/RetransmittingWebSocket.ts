@@ -1,3 +1,4 @@
+import { TextDecoder } from 'util'
 import * as Events from './events'
 
 export const enum ReadyState {
@@ -10,9 +11,12 @@ export const enum ReadyState {
 export const enum RETRANSMIT_MSG_TYPE {
   INITIAL_SERIAL = 1,
   DATA,
+  DATA_STRING,
   ACK,
 }
 
+const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
 export const defaultMaxBufferSize = 100000
 export const defaultMaxUnacknowledgedMessages = 100
 export const defaultMaxTimeMs = 10000
@@ -24,7 +28,7 @@ export type ListenersMap = {
   close: Array<Events.WebSocketEventListenerMap['close']>
 }
 
-type WebSocketLike = {
+export type WebSocketLike = {
   binaryType: string
   url: string
   extensions: string
@@ -50,7 +54,7 @@ export class RetransmittingWebSocket {
   /**
    * An event listener to be called when an error occurs
    */
-  onerror: ((event: Events.Event) => void) | null = null
+  onerror: ((event: Events.ErrorEvent) => void) | null = null
   /**
    * An event listener to be called when a message is received from the server
    */
@@ -137,9 +141,15 @@ export class RetransmittingWebSocket {
   /**
    * Enqueue specified data to be transmitted to the server over the WebSocket connection
    */
-  send(messageBody: ArrayBuffer | ArrayBufferView): void {
+  send(messageBody: ArrayBuffer | ArrayBufferView | string): void {
+    let dataMsgType = RETRANSMIT_MSG_TYPE.DATA
+    if (typeof messageBody === 'string') {
+      messageBody = textEncoder.encode(messageBody)
+      dataMsgType = RETRANSMIT_MSG_TYPE.DATA_STRING
+    }
+
     const message = new Uint8Array(Uint32Array.BYTES_PER_ELEMENT + messageBody.byteLength)
-    new Uint32Array(message.buffer, 0, 1)[0] = RETRANSMIT_MSG_TYPE.DATA
+    new Uint32Array(message.buffer, 0, 1)[0] = dataMsgType
 
     message.set(
       ArrayBuffer.isView(messageBody)
@@ -242,10 +252,14 @@ export class RetransmittingWebSocket {
       return
     }
 
-    if (typeId === RETRANSMIT_MSG_TYPE.DATA) {
+    if (typeId === RETRANSMIT_MSG_TYPE.DATA || typeId === RETRANSMIT_MSG_TYPE.DATA_STRING) {
       this.receiveSerial++
       if (this.receiveSerial > this.processedSerial) {
-        const offsetEvent = { ...event, data: new Uint8Array(data, Uint32Array.BYTES_PER_ELEMENT) }
+        const offsetData = new Uint8Array(data, Uint32Array.BYTES_PER_ELEMENT)
+        const offsetEvent = {
+          ...event,
+          data: typeId === RETRANSMIT_MSG_TYPE.DATA ? offsetData : textDecoder.decode(offsetData),
+        }
         this.onmessage?.(offsetEvent)
         this._listeners.message.forEach((listener) => this._callEventListener(offsetEvent, listener))
 
