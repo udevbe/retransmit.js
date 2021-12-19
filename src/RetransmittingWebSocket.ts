@@ -24,7 +24,7 @@ export type ListenersMap = {
 }
 
 export type WebSocketLike = {
-  binaryType: string
+  binaryType: BinaryType
   url: string
   extensions: string
   protocol: string
@@ -50,7 +50,7 @@ function callEventListener<T extends keyof Events.WebSocketEventListenerMap>(
 }
 
 export class RetransmittingWebSocket {
-  readonly binaryType: 'arraybuffer' = 'arraybuffer'
+  private _binaryType: BinaryType = 'blob'
   /**
    * An event listener to be called when the WebSocket connection's readyState changes to CLOSED
    */
@@ -111,6 +111,17 @@ export class RetransmittingWebSocket {
     }
   }
 
+  get binaryType(): BinaryType {
+    return this.ws ? this.ws.binaryType : this._binaryType
+  }
+
+  set binaryType(value: BinaryType) {
+    this._binaryType = value
+    if (this.ws) {
+      this.ws.binaryType = value
+    }
+  }
+
   /**
    * The number of bytes of data that have been queued using calls to send() but not yet
    * transmitted to the network. This value resets to zero once all queued data has been sent.
@@ -121,6 +132,8 @@ export class RetransmittingWebSocket {
     const bytes = this.pendingAckMessages.reduce((acc, message) => {
       if (typeof message === 'string') {
         acc += message.length // not byte size
+      } else if (message instanceof Blob) {
+        acc += message.size
       } else {
         acc += message.byteLength
       }
@@ -237,7 +250,7 @@ export class RetransmittingWebSocket {
 
     this._readyState = ReadyState.OPEN
     this.cancelClosedTimeoutTask()
-    this.ws.binaryType = this.binaryType
+    this.ws.binaryType = this._binaryType
 
     // send enqueued messages (messages sent before websocket open event)
     if (this.ws && this.ws.readyState === ReadyState.OPEN) {
