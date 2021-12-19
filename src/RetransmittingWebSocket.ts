@@ -1,25 +1,20 @@
-import { TextDecoder } from 'util'
 import * as Events from './events'
 
 export const enum ReadyState {
-  CONNECTING,
-  OPEN,
-  CLOSING,
-  CLOSED,
+  OPEN = 1,
+  CLOSED = 3,
 }
 
 export const enum RETRANSMIT_MSG_TYPE {
   INITIAL_SERIAL = 1,
   DATA,
-  DATA_STRING,
   ACK,
 }
 
-const textEncoder = new TextEncoder()
-const textDecoder = new TextDecoder()
 export const defaultMaxBufferSize = 100000
 export const defaultMaxUnacknowledgedMessages = 100
 export const defaultMaxTimeMs = 10000
+export const defaultCloseTimeoutMs = 3000
 
 export type ListenersMap = {
   error: Array<Events.WebSocketEventListenerMap['error']>
@@ -36,17 +31,26 @@ export type WebSocketLike = {
   bufferedAmount: number
   readyState: number
   close(code: number, reason: string | undefined): void
-  send(message: ArrayBufferLike): void
+  send(message: ArrayBufferLike | string): void
   removeEventListener(name: string, eventListener: (event: any) => void): void
   addEventListener(name: string, eventListener: (event: any) => void): void
 }
 
+function callEventListener<T extends keyof Events.WebSocketEventListenerMap>(
+  event: Events.WebSocketEventMap[T],
+  listener: Events.WebSocketEventListenerMap[T],
+) {
+  if ('handleEvent' in listener) {
+    // @ts-ignore
+    listener.handleEvent(event)
+  } else {
+    // @ts-ignore
+    listener(event)
+  }
+}
+
 export class RetransmittingWebSocket {
   readonly binaryType: 'arraybuffer' = 'arraybuffer'
-  readonly CONNECTING = ReadyState.CONNECTING
-  readonly OPEN = ReadyState.OPEN
-  readonly CLOSING = ReadyState.CLOSING
-  readonly CLOSED = ReadyState.CLOSED
   /**
    * An event listener to be called when the WebSocket connection's readyState changes to CLOSED
    */
@@ -63,30 +67,49 @@ export class RetransmittingWebSocket {
    * An event listener to be called when the WebSocket connection's readyState changes to OPEN;
    * this indicates that the connection is ready to send and receive data
    */
-  onopen: ((event: Event) => void) | null = null
+  onopen: ((event: Events.Event) => void) | null = null
 
-  private pendingAckMessages: Uint8Array[] = []
+  private pendingAckMessages: (ArrayBufferLike | string)[] = []
   private receiveSerial = 0
   private processedSerial = 0
   private bufferLowestSerial = 0
   private unacknowledgedSize = 0
   private unacknowledgedMessages = 0
   private unacknowledgedTimoutTask?: ReturnType<typeof setTimeout>
+  private closedTimeoutTask?: ReturnType<typeof setTimeout>
   private ws?: WebSocketLike
-  private _listeners: ListenersMap = {
+  private receivedHeader?: ArrayBuffer
+
+  private listeners: ListenersMap = {
     error: [],
     message: [],
     open: [],
     close: [],
   }
+  private _readyState: ReadyState = ReadyState.CLOSED
+  private readonly config: {
+    maxUnacknowledBufferSize: number
+    maxUnacknowledgedMessages: number
+    maxUnacknowledTimeMs: number
+    closeTimeout: number
+  }
 
   constructor(
-    private readonly ackTreshold: { maxBufferSize: number; maxUnacknowledgedMessages: number; maxTimeMs: number } = {
-      maxBufferSize: defaultMaxBufferSize,
+    config?: Partial<{
+      maxBufferSize: number
+      maxUnacknowledgedMessages: number
+      maxTimeMs: number
+      closeTimeout: number
+    }>,
+  ) {
+    this.config = {
+      maxUnacknowledBufferSize: defaultMaxBufferSize,
       maxUnacknowledgedMessages: defaultMaxUnacknowledgedMessages,
-      maxTimeMs: defaultMaxTimeMs,
-    },
-  ) {}
+      maxUnacknowledTimeMs: defaultMaxTimeMs,
+      closeTimeout: defaultCloseTimeoutMs,
+      ...config,
+    }
+  }
 
   /**
    * The number of bytes of data that have been queued using calls to send() but not yet
@@ -95,8 +118,15 @@ export class RetransmittingWebSocket {
    * this will continue to climb. Read only
    */
   get bufferedAmount(): number {
-    const bytes = this.pendingAckMessages.reduce((acc, message) => (acc += message.byteLength), 0)
-    return bytes + (this.ws?.bufferedAmount ?? 0)
+    const bytes = this.pendingAckMessages.reduce((acc, message) => {
+      if (typeof message === 'string') {
+        acc += message.length // not byte size
+      } else {
+        acc += message.byteLength
+      }
+      return acc
+    }, 0)
+    return bytes + (this.ws ? this.ws.bufferedAmount : 0)
   }
 
   /**
@@ -120,7 +150,7 @@ export class RetransmittingWebSocket {
    * The current state of the connection; this is one of the Ready state constants
    */
   get readyState(): number {
-    return this.ws?.readyState ?? ReadyState.CLOSED
+    return this._readyState
   }
 
   /**
@@ -134,33 +164,20 @@ export class RetransmittingWebSocket {
    * Closes the WebSocket connection or connection attempt, if any. If the connection is already
    * CLOSED, this method does nothing
    */
-  public close(code = 1000, reason?: string) {
+  public close(code = 1000, reason?: string): void {
     this.ws?.close(code, reason)
   }
 
   /**
    * Enqueue specified data to be transmitted to the server over the WebSocket connection
    */
-  send(messageBody: ArrayBuffer | ArrayBufferView | string): void {
-    let dataMsgType = RETRANSMIT_MSG_TYPE.DATA
-    if (typeof messageBody === 'string') {
-      messageBody = textEncoder.encode(messageBody)
-      dataMsgType = RETRANSMIT_MSG_TYPE.DATA_STRING
-    }
-
-    const message = new Uint8Array(Uint32Array.BYTES_PER_ELEMENT + messageBody.byteLength)
-    new Uint32Array(message.buffer, 0, 1)[0] = dataMsgType
-
-    message.set(
-      ArrayBuffer.isView(messageBody)
-        ? new Uint8Array(messageBody.buffer, messageBody.byteOffset, messageBody.byteLength)
-        : new Uint8Array(messageBody),
-      Uint32Array.BYTES_PER_ELEMENT,
-    )
-
-    this.pendingAckMessages.push(message)
+  send(messageBody: ArrayBufferLike | string): void {
+    const header = new Uint32Array([RETRANSMIT_MSG_TYPE.DATA])
+    this.pendingAckMessages.push(header)
+    this.pendingAckMessages.push(messageBody)
     if (this.ws && this.ws.readyState === ReadyState.OPEN) {
-      this.ws.send(message)
+      this.ws.send(header)
+      this.ws.send(messageBody)
     }
   }
 
@@ -171,17 +188,17 @@ export class RetransmittingWebSocket {
     type: T,
     listener: Events.WebSocketEventListenerMap[T],
   ): void {
-    if (this._listeners[type]) {
+    if (this.listeners[type]) {
       // @ts-ignore
-      this._listeners[type].push(listener)
+      this.listeners[type].push(listener)
     }
   }
 
-  public dispatchEvent(event: Event) {
-    const listeners = this._listeners[event.type as keyof Events.WebSocketEventListenerMap]
+  public dispatchEvent(event: Events.Event): boolean {
+    const listeners = this.listeners[event.type as keyof Events.WebSocketEventListenerMap]
     if (listeners) {
       for (const listener of listeners) {
-        this._callEventListener(event, listener)
+        callEventListener(event, listener)
       }
     }
     return true
@@ -194,136 +211,151 @@ export class RetransmittingWebSocket {
     type: T,
     listener: Events.WebSocketEventListenerMap[T],
   ): void {
-    if (this._listeners[type]) {
+    if (this.listeners[type]) {
       // @ts-ignore
-      this._listeners[type] = this._listeners[type].filter((l) => l !== listener)
+      this.listeners[type] = this.listeners[type].filter((l) => l !== listener)
     }
   }
 
   useWebSocket(webSocket: WebSocketLike): void {
     if (this.ws) {
-      this._removeListeners()
+      this.removeListeners()
     }
     this.ws = webSocket
-    this._addListeners()
+    this.addListeners()
     if (this.ws.readyState === ReadyState.OPEN) {
-      this._handleOpen(new Event('open'))
+      this.handleOpen(new Events.Event('open', this.ws))
+    } else if (this.ws.readyState === ReadyState.CLOSED) {
+      this.handleClose(new Events.CloseEvent(1000, 'closed', this.ws))
     }
   }
 
-  private _callEventListener<T extends keyof Events.WebSocketEventListenerMap>(
-    event: Events.WebSocketEventMap[T],
-    listener: Events.WebSocketEventListenerMap[T],
-  ) {
-    if ('handleEvent' in listener) {
-      // @ts-ignore
-      listener.handleEvent(event)
-    } else {
-      // @ts-ignore
-      listener(event)
-    }
-  }
-
-  private _handleOpen = (event: Event) => {
+  private handleOpen(event: Events.Event) {
     if (this.ws === undefined) {
       throw new Error('BUG. Received open but no websocket was present.')
     }
 
+    this._readyState = ReadyState.OPEN
+    this.cancelClosedTimeoutTask()
     this.ws.binaryType = this.binaryType
 
     // send enqueued messages (messages sent before websocket open event)
-    this.ws.send(new Uint32Array([RETRANSMIT_MSG_TYPE.INITIAL_SERIAL, this.bufferLowestSerial]))
-    for (const msg of this.pendingAckMessages) {
-      this.ws.send(msg)
+    if (this.ws && this.ws.readyState === ReadyState.OPEN) {
+      this.ws.send(new Uint32Array([RETRANSMIT_MSG_TYPE.INITIAL_SERIAL, this.bufferLowestSerial]))
+      for (const msg of this.pendingAckMessages) {
+        this.ws.send(msg)
+      }
     }
 
+    // only send out open event
     if (this.onopen) {
       this.onopen(event)
     }
-    this._listeners.open.forEach((listener) => this._callEventListener(event, listener))
+    this.listeners.open.forEach((listener) => callEventListener(event, listener))
   }
 
-  private _handleMessage = (event: MessageEvent) => {
-    const data = event.data as ArrayBuffer
-    const typeId = new Uint32Array(data, 0, 1)[0]
-
-    if (typeId === RETRANSMIT_MSG_TYPE.INITIAL_SERIAL) {
-      this.receiveSerial = new Uint32Array(data, Uint32Array.BYTES_PER_ELEMENT, 1)[0]
-      return
+  private handleMessage(event: MessageEvent) {
+    let processData = false
+    if (this.receivedHeader === undefined) {
+      this.receivedHeader = event.data as ArrayBuffer
+    } else {
+      processData = true
     }
 
-    if (typeId === RETRANSMIT_MSG_TYPE.DATA || typeId === RETRANSMIT_MSG_TYPE.DATA_STRING) {
-      this.receiveSerial++
-      if (this.receiveSerial > this.processedSerial) {
-        const offsetData = new Uint8Array(data, Uint32Array.BYTES_PER_ELEMENT)
-        const offsetEvent = {
-          ...event,
-          data: typeId === RETRANSMIT_MSG_TYPE.DATA ? offsetData : textDecoder.decode(offsetData),
-        }
-        this.onmessage?.(offsetEvent)
-        this._listeners.message.forEach((listener) => this._callEventListener(offsetEvent, listener))
+    const typeId = new Uint32Array(this.receivedHeader, 0, 1)[0]
 
-        this.processedSerial = this.receiveSerial
-      }
-      this.unacknowledgedSize += data.byteLength
-      this.unacknowledgedMessages++
-
-      this.ensureUnacknowledgedTimoutTask()
-
-      if (
-        this.unacknowledgedSize > this.ackTreshold.maxBufferSize ||
-        this.unacknowledgedMessages > this.ackTreshold.maxUnacknowledgedMessages
-      ) {
-        this.sendAck()
-      }
+    if (typeId === RETRANSMIT_MSG_TYPE.INITIAL_SERIAL) {
+      this.receiveSerial = new Uint32Array(this.receivedHeader, Uint32Array.BYTES_PER_ELEMENT, 1)[0]
+      this.receivedHeader = undefined
       return
     }
 
     if (typeId === RETRANSMIT_MSG_TYPE.ACK) {
-      const sendUntil = new Uint32Array(data, Uint32Array.BYTES_PER_ELEMENT, 1)[0]
+      const sendUntil = new Uint32Array(this.receivedHeader, Uint32Array.BYTES_PER_ELEMENT, 1)[0]
       this.pendingAckMessages = this.pendingAckMessages.slice(
         sendUntil - this.bufferLowestSerial,
         this.pendingAckMessages.length,
       )
       this.bufferLowestSerial = sendUntil
+      this.receivedHeader = undefined
+      return
+    }
+
+    if (processData && typeId === RETRANSMIT_MSG_TYPE.DATA) {
+      this.receiveSerial++
+      if (this.receiveSerial > this.processedSerial) {
+        this.onmessage?.(event)
+        this.listeners.message.forEach((listener) => callEventListener(event, listener))
+
+        this.processedSerial = this.receiveSerial
+      }
+      this.unacknowledgedSize += typeof event.data === 'string' ? event.data.length : event.data.byteLength
+      this.unacknowledgedMessages++
+
+      this.ensureUnacknowledgedTimoutTask()
+
+      if (
+        this.unacknowledgedSize > this.config.maxUnacknowledBufferSize ||
+        this.unacknowledgedMessages > this.config.maxUnacknowledgedMessages
+      ) {
+        this.sendAck()
+      }
+      this.receivedHeader = undefined
       return
     }
   }
 
-  private _handleError = (event: Events.ErrorEvent) => {
+  private handleError(event: Events.ErrorEvent) {
     if (this.onerror) {
       this.onerror(event)
     }
-    this._listeners.error.forEach((listener) => this._callEventListener(event, listener))
+    this.listeners.error.forEach((listener) => callEventListener(event, listener))
   }
 
-  private _handleClose = (event: Events.CloseEvent) => {
-    if (this.onclose) {
-      this.onclose(event)
+  private ensureClosedTimeoutTask(event: Events.CloseEvent) {
+    if (this.closedTimeoutTask) {
+      return
     }
-    this._listeners.close.forEach((listener) => this._callEventListener(event, listener))
+    this.closedTimeoutTask = setTimeout(() => {
+      this._readyState = ReadyState.CLOSED
+      this.closedTimeoutTask = undefined
+      if (this.onclose) {
+        this.onclose(event)
+      }
+      this.listeners.close.forEach((listener) => callEventListener(event, listener))
+    }, this.config.closeTimeout)
   }
 
-  private _removeListeners() {
+  private cancelClosedTimeoutTask() {
+    if (this.closedTimeoutTask) {
+      clearTimeout(this.closedTimeoutTask)
+    }
+  }
+
+  private handleClose(event: Events.CloseEvent) {
+    this.ensureClosedTimeoutTask(event)
+  }
+
+  private removeListeners() {
     if (!this.ws) {
       return
     }
-    this.ws.removeEventListener('open', this._handleOpen)
-    this.ws.removeEventListener('close', this._handleClose)
-    this.ws.removeEventListener('message', this._handleMessage)
+    this.ws.removeEventListener('open', this.handleOpen.bind(this))
+    this.ws.removeEventListener('close', this.handleClose.bind(this))
+    this.ws.removeEventListener('message', this.handleMessage.bind(this))
     // @ts-ignore
-    this.ws.removeEventListener('error', this._handleError)
+    this.ws.removeEventListener('error', this.handleError.bind(this))
   }
 
-  private _addListeners() {
+  private addListeners() {
     if (!this.ws) {
       return
     }
-    this.ws.addEventListener('open', this._handleOpen)
-    this.ws.addEventListener('close', this._handleClose)
-    this.ws.addEventListener('message', this._handleMessage)
+    this.ws.addEventListener('open', this.handleOpen.bind(this))
+    this.ws.addEventListener('close', this.handleClose.bind(this))
+    this.ws.addEventListener('message', this.handleMessage.bind(this))
     // @ts-ignore
-    this.ws.addEventListener('error', this._handleError)
+    this.ws.addEventListener('error', this.handleError.bind(this))
   }
 
   private sendAck() {
@@ -340,7 +372,7 @@ export class RetransmittingWebSocket {
       this.unacknowledgedTimoutTask = setTimeout(() => {
         this.unacknowledgedTimoutTask = undefined
         this.sendAck()
-      }, this.ackTreshold.maxTimeMs)
+      }, this.config.maxUnacknowledTimeMs)
     }
   }
 

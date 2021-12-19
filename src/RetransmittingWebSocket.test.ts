@@ -9,6 +9,8 @@ import {
   defaultMaxBufferSize,
   defaultMaxUnacknowledgedMessages,
   defaultMaxTimeMs,
+  defaultCloseTimeoutMs,
+  ReadyState,
 } from './RetransmittingWebSocket'
 
 describe('WebSocketRetransmitter', () => {
@@ -89,8 +91,9 @@ describe('WebSocketRetransmitter', () => {
     await someTime()
 
     // then we get the encoded data sent out
-    expect(serverReceiveCallback).toHaveBeenCalledTimes(2)
-    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0, 5]))
+    expect(serverReceiveCallback).toHaveBeenCalledTimes(3)
+    expect(serverReceiveCallback).toBeCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0]))
+    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([5]))
   })
 
   test('it sends a handshake and string data after the websocket is opened', async () => {
@@ -103,10 +106,9 @@ describe('WebSocketRetransmitter', () => {
     await someTime()
 
     // then we get the encoded data sent out
-    expect(serverReceiveCallback).toHaveBeenCalledTimes(2)
-    expect(serverReceiveCallback).lastCalledWith(
-      new Uint8Array([RETRANSMIT_MSG_TYPE.DATA_STRING, 0, 0, 0, ...new TextEncoder().encode('test123')]),
-    )
+    expect(serverReceiveCallback).toHaveBeenCalledTimes(3)
+    expect(serverReceiveCallback).toBeCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0]))
+    expect(serverReceiveCallback).lastCalledWith('test123')
   })
 
   test('it sends a handshake and previously buffered data after the websocket is opened', async () => {
@@ -119,8 +121,9 @@ describe('WebSocketRetransmitter', () => {
     await someTime()
 
     // then a handshake and buffered data is sent
-    expect(serverReceiveCallback).toHaveBeenCalledTimes(2)
-    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0, 5]))
+    expect(serverReceiveCallback).toHaveBeenCalledTimes(3)
+    expect(serverReceiveCallback).toBeCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0]))
+    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([5]))
   })
 
   test('it receives a handshake and data after the websocket is opened', async () => {
@@ -130,12 +133,13 @@ describe('WebSocketRetransmitter', () => {
     openRetransmittingWebSocket()
     const serverWebSocket = await serverWebSocketOpen
     serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.INITIAL_SERIAL, 0]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 5]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([5]))
     await someTime()
 
     // then a handshake and data is received
     expect(receiveCallback).toHaveBeenCalledTimes(1)
-    expect(receiveCallback).lastCalledWith(new Uint8Array(new Uint32Array([5]).buffer))
+    expect(receiveCallback).lastCalledWith(new Uint8Array([5]))
   })
 
   test('it receives a handshake and string data after the websocket is opened', async () => {
@@ -145,9 +149,8 @@ describe('WebSocketRetransmitter', () => {
     openRetransmittingWebSocket()
     const serverWebSocket = await serverWebSocketOpen
     serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.INITIAL_SERIAL, 0]))
-    serverWebSocket.send(
-      new Uint8Array([RETRANSMIT_MSG_TYPE.DATA_STRING, 0, 0, 0, ...new TextEncoder().encode('test123')]),
-    )
+    serverWebSocket.send(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0]))
+    serverWebSocket.send('test123')
     await someTime()
 
     // then a handshake and data is received
@@ -165,8 +168,9 @@ describe('WebSocketRetransmitter', () => {
     await someTime()
 
     // then a handshake and data is sent over websocket
-    expect(serverReceiveCallback).toHaveBeenCalledTimes(2)
-    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0, 5]))
+    expect(serverReceiveCallback).toHaveBeenCalledTimes(3)
+    expect(serverReceiveCallback).toHaveBeenCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0]))
+    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([5]))
 
     // and when the websocket is reconnected
     stopServer()
@@ -175,8 +179,9 @@ describe('WebSocketRetransmitter', () => {
     await someTime()
 
     // then a new handshake and the previously un-acked data is sent again
-    expect(serverReceiveCallback).toHaveBeenCalledTimes(4)
-    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0, 5]))
+    expect(serverReceiveCallback).toHaveBeenCalledTimes(6)
+    expect(serverReceiveCallback).toHaveBeenCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0]))
+    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([5]))
   })
 
   // it can ignore retransmits it has already seen
@@ -187,15 +192,19 @@ describe('WebSocketRetransmitter', () => {
     openRetransmittingWebSocket()
     let serverWebSocket = await serverWebSocketOpen
     serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.INITIAL_SERIAL, 0]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 5]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 6]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 7]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 8]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([5]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([6]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([7]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([8]))
     await someTime()
 
     // then the callback returns only the data corresponding to the received the serial
     expect(receiveCallback).toHaveBeenCalledTimes(4)
-    expect(receiveCallback).lastCalledWith(new Uint8Array(new Uint32Array([8]).buffer))
+    expect(receiveCallback).lastCalledWith(new Uint8Array([8]))
 
     // and when websocket is reconnected and a new serial and old and new data is received
     stopServer()
@@ -203,16 +212,21 @@ describe('WebSocketRetransmitter', () => {
     openRetransmittingWebSocket()
     serverWebSocket = await serverWebSocketOpen
     serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.INITIAL_SERIAL, 0]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 5]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 6]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 7]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 8]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 9]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([5]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([6]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([7]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([8]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([9]))
     await someTime()
 
     // then the callback returns only the data corresponding to the newly received serial
     expect(receiveCallback).toHaveBeenCalledTimes(5)
-    expect(receiveCallback).lastCalledWith(new Uint8Array(new Uint32Array([9]).buffer))
+    expect(receiveCallback).lastCalledWith(new Uint8Array([9]))
 
     // and when websocket is reconnected and a new serial and old and new data is received
     stopServer()
@@ -220,15 +234,19 @@ describe('WebSocketRetransmitter', () => {
     openRetransmittingWebSocket()
     serverWebSocket = await serverWebSocketOpen
     serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.INITIAL_SERIAL, 2]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 7]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 8]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 9]))
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 10]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([7]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([8]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([9]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint8Array([10]))
     await someTime()
 
     // then the callback returns only the data corresponding to the newly received serial
     expect(receiveCallback).toHaveBeenCalledTimes(6)
-    expect(receiveCallback).lastCalledWith(new Uint8Array(new Uint32Array([10]).buffer))
+    expect(receiveCallback).lastCalledWith(new Uint8Array(new Uint8Array([10]).buffer))
   })
 
   test('it drops messages from internal buffer if it received an acknowledge', async () => {
@@ -243,8 +261,9 @@ describe('WebSocketRetransmitter', () => {
     await someTime()
 
     // then a handshake and data is sent over websocket
-    expect(serverReceiveCallback).toHaveBeenCalledTimes(4)
-    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0, 7]))
+    expect(serverReceiveCallback).toHaveBeenCalledTimes(7)
+    expect(serverReceiveCallback).toBeCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0]))
+    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([7]))
 
     // and when an acknowledgment is received and connection is reset
     serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.ACK, 1]))
@@ -255,8 +274,9 @@ describe('WebSocketRetransmitter', () => {
     await someTime()
 
     // then only unacknowledged data is sent again
-    expect(serverReceiveCallback).toHaveBeenCalledTimes(7)
-    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0, 7]))
+    expect(serverReceiveCallback).toHaveBeenCalledTimes(13)
+    expect(serverReceiveCallback).toBeCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.DATA, 0, 0, 0]))
+    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([7]))
   })
 
   test('it sends an acknowledgement after enough bytes are sent', async () => {
@@ -272,25 +292,28 @@ describe('WebSocketRetransmitter', () => {
     expect(serverReceiveCallback).toHaveBeenCalledTimes(1) // just the serial
 
     // and when cumulative received message size threshold is crossed
-    const mylongmessage = new Uint8Array(Math.ceil(defaultMaxBufferSize / 2.5)) // more then 1/3th of the buffer, less then 1/2'th
-    mylongmessage.set(new Uint8Array(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 1, 2, 3, 4, 5]).buffer), 0)
+    const longMessage = new Uint8Array(Math.ceil(defaultMaxBufferSize / 2.5)) // more then 1/3th of the buffer, less then 1/2'th
+    longMessage.set(new Uint8Array([1, 2, 3, 4, 5]))
 
-    serverWebSocket.send(mylongmessage)
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(longMessage)
     await someTime()
     expect(serverReceiveCallback).toHaveBeenCalledTimes(1) // still just the serial
 
-    serverWebSocket.send(mylongmessage)
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(longMessage)
     await someTime()
     expect(serverReceiveCallback).toHaveBeenCalledTimes(1) // still just the serial
 
-    serverWebSocket.send(mylongmessage)
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(longMessage)
     await someTime()
 
     // then a single ack is sent
     expect(serverReceiveCallback).toHaveBeenCalledTimes(2) // serial + ACK
     expect(serverReceiveCallback).lastCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.ACK, 0, 0, 0, 3, 0, 0, 0]))
 
-    serverWebSocket.send(mylongmessage)
+    serverWebSocket.send(longMessage)
     await someTime()
     expect(serverReceiveCallback).toHaveBeenCalledTimes(2) // serial + only one ACK
   })
@@ -309,12 +332,14 @@ describe('WebSocketRetransmitter', () => {
 
     // and when cumulative received message count threshold is crossed
     for (let i = 0; i < defaultMaxUnacknowledgedMessages; i++) {
-      serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, i]))
+      serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+      serverWebSocket.send(new Uint32Array([i]))
     }
     await someTime()
     expect(serverReceiveCallback).toHaveBeenCalledTimes(1) // still just the serial
 
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 123]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint32Array([123]))
     await someTime()
 
     // then a single ack is sent
@@ -322,7 +347,8 @@ describe('WebSocketRetransmitter', () => {
     expect(serverReceiveCallback).lastCalledWith(
       new Uint8Array(new Uint32Array([RETRANSMIT_MSG_TYPE.ACK, defaultMaxUnacknowledgedMessages + 1]).buffer),
     )
-    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 123]))
+    serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+    serverWebSocket.send(new Uint32Array([123]))
     await someTime()
     expect(serverReceiveCallback).toHaveBeenCalledTimes(2) // serial + only one ACK
   })
@@ -342,7 +368,8 @@ describe('WebSocketRetransmitter', () => {
       expect(serverReceiveCallback).toHaveBeenCalledTimes(1) // just the serial
 
       // and when cumulative received message count threshold is crossed
-      serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 123]))
+      serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+      serverWebSocket.send(new Uint32Array([123]))
       await someTime()
       expect(serverReceiveCallback).toHaveBeenCalledTimes(1) // still just the serial
 
@@ -351,10 +378,58 @@ describe('WebSocketRetransmitter', () => {
       // then a single ack is sent
       expect(serverReceiveCallback).toHaveBeenCalledTimes(2) // serial + ACK
       expect(serverReceiveCallback).lastCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.ACK, 0, 0, 0, 1, 0, 0, 0]))
-      serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA, 123]))
+      serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.DATA]))
+      serverWebSocket.send(new Uint32Array([123]))
       await someTime()
       expect(serverReceiveCallback).toHaveBeenCalledTimes(2) // serial + only one ACK
     },
     defaultMaxTimeMs + 1000,
+  )
+
+  test('it does not emit a close event on reconnect within close timeout', async () => {
+    // given a closed websocket
+    retransmittingWebSocket.onopen = jest.fn()
+    retransmittingWebSocket.onclose = jest.fn()
+
+    // when reconnected within the close timeout,
+    openRetransmittingWebSocket()
+    await serverWebSocketOpen
+    stopServer()
+    await someTime()
+    expect(retransmittingWebSocket.readyState).toBe(ReadyState.OPEN)
+    startServer()
+    openRetransmittingWebSocket()
+    await serverWebSocketOpen
+
+    // then no close event is emitted.
+    expect(retransmittingWebSocket.readyState).toBe(ReadyState.OPEN)
+    expect(retransmittingWebSocket.onopen).toHaveBeenCalled()
+    expect(retransmittingWebSocket.onclose).not.toHaveBeenCalled()
+  })
+
+  test(
+    'it emits a close event after close timeout',
+    async () => {
+      // given a closed websocket
+      retransmittingWebSocket.onopen = jest.fn()
+      retransmittingWebSocket.onclose = jest.fn()
+
+      // when reconnected within the close timeout,
+      openRetransmittingWebSocket()
+      await serverWebSocketOpen
+      stopServer()
+      await new Promise((resolve) => setTimeout(resolve, defaultCloseTimeoutMs + 100))
+      expect(retransmittingWebSocket.readyState).toBe(ReadyState.CLOSED)
+      startServer()
+      openRetransmittingWebSocket()
+      await serverWebSocketOpen
+      await someTime()
+
+      // then no close event is emitted.
+      expect(retransmittingWebSocket.readyState).toBe(ReadyState.OPEN)
+      expect(retransmittingWebSocket.onopen).toHaveBeenCalledTimes(2)
+      expect(retransmittingWebSocket.onclose).toHaveBeenCalledTimes(1)
+    },
+    defaultCloseTimeoutMs + 100000,
   )
 })
