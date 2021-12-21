@@ -1,9 +1,10 @@
 {
   "name": "retransmitting-websocket",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "A generic higher level wrapper to ensure state is retransmitted after network failure",
   "main": "dist/index.js",
   "files": [
+    "src",
     "dist"
   ],
   "repository": "https://github.com/udevbe/retransmit.js",
