@@ -508,14 +508,13 @@ describe('WebSocketRetransmitter', () => {
 
     // then no close event is emitted.
     expect(retransmittingWebSocket.readyState).toBe(ReadyState.CLOSING)
-    expect(serverReceiveCallback).toHaveBeenCalledTimes(3)
-    expect(serverReceiveCallback).toHaveBeenNthCalledWith(2, new Uint8Array([RETRANSMIT_MSG_TYPE.CLOSE, 0, 0, 0]))
-    expect(serverReceiveCallback).lastCalledWith(JSON.stringify({ code: 1234, reason: 'test close' }))
+    expect(serverReceiveCallback).toHaveBeenCalledTimes(2)
+    expect(serverReceiveCallback).lastCalledWith(new Uint8Array([RETRANSMIT_MSG_TYPE.CLOSE, 0, 0, 0]))
   })
 
   test('it re-sends a close message after a user initiated close after a re-connect.', async () => {
     // given a closed websocket
-    const closeTimeoutMs = 250
+    const closeTimeoutMs = 25000
     createRetransmittingWebSocket({ closeTimeoutMs })
 
     // when reconnected within the close timeout,
@@ -531,10 +530,9 @@ describe('WebSocketRetransmitter', () => {
 
     // then no close event is emitted.
     expect(retransmittingWebSocket.readyState).toBe(ReadyState.CLOSING)
-    expect(serverReceiveCallback).toHaveBeenCalledTimes(6)
+    expect(serverReceiveCallback).toHaveBeenCalledTimes(4)
     expect(serverReceiveCallback).toHaveBeenNthCalledWith(2, new Uint8Array([RETRANSMIT_MSG_TYPE.CLOSE, 0, 0, 0]))
-    expect(serverReceiveCallback).toHaveBeenNthCalledWith(5, new Uint8Array([RETRANSMIT_MSG_TYPE.CLOSE, 0, 0, 0]))
-    expect(serverReceiveCallback).lastCalledWith(JSON.stringify({ code: 1234, reason: 'test close' }))
+    expect(serverReceiveCallback).toHaveBeenNthCalledWith(4, new Uint8Array([RETRANSMIT_MSG_TYPE.CLOSE, 0, 0, 0]))
   })
 
   test('it closes after a close ack timeout', async () => {
@@ -552,7 +550,7 @@ describe('WebSocketRetransmitter', () => {
     await new Promise((resolve) => setTimeout(resolve, closeTimeoutMs + 50))
 
     // then no close event is emitted.
-    expect(serverReceiveCallback).toHaveBeenCalledTimes(3)
+    expect(serverReceiveCallback).toHaveBeenCalledTimes(2)
     expect(retransmittingWebSocket.readyState).toBe(ReadyState.CLOSED)
     expect(retransmittingWebSocket.onclose).toHaveBeenCalledTimes(1)
   })
@@ -565,19 +563,19 @@ describe('WebSocketRetransmitter', () => {
     // when reconnected within the close timeout,
     openRetransmittingWebSocket()
     const serverWebSocket = await serverWebSocketOpen
-    retransmittingWebSocket.close(1234, 'test close')
+    retransmittingWebSocket.close(1000, 'test close')
     expect(retransmittingWebSocket.readyState).toBe(ReadyState.CLOSING)
 
     serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.CLOSE_ACK]))
     await someTime()
 
     // then no close event is emitted.
-    expect(serverReceiveCallback).toHaveBeenCalledTimes(3)
+    expect(serverReceiveCallback).toHaveBeenCalledTimes(2)
     expect(retransmittingWebSocket.readyState).toBe(ReadyState.CLOSED)
     expect(retransmittingWebSocket.onclose).toHaveBeenCalledTimes(1)
   })
 
-  test('it sends a close ack message and closes after a close message is received.', async () => {
+  test('it sends a close ack message and closes after a close event is received.', async () => {
     // given a closed websocket
     createRetransmittingWebSocket()
     retransmittingWebSocket.onclose = jest.fn()
@@ -586,7 +584,8 @@ describe('WebSocketRetransmitter', () => {
     openRetransmittingWebSocket()
     const serverWebSocket = await serverWebSocketOpen
     serverWebSocket.send(new Uint32Array([RETRANSMIT_MSG_TYPE.CLOSE]))
-    serverWebSocket.send(JSON.stringify({ code: 1234, reason: 'test close' }))
+    await someTime()
+    stopServer()
     await someTime()
 
     // then no close event is emitted.

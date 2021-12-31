@@ -19,6 +19,7 @@ export const defaultMaxBufferSizeBytes = 100000
 export const defaultMaxUnacknowledgedMessages = 100
 export const defaultMaxTimeMs = 10000
 export const defaultCloseTimeoutMs = 60000
+export const defaultReconnectIntervalMs = 250
 
 export type ListenersMap = {
   error: Array<Events.WebSocketEventListenerMap['error']>
@@ -84,6 +85,8 @@ export class RetransmittingWebSocket {
   private ws?: WebSocketLike
   private receivedHeader?: ArrayBuffer
   private pendingCloseEvent?: Events.CloseEvent
+  private pendingErrorEvent?: Events.ErrorEvent
+  private closeAcknowledged?: boolean
 
   private listeners: ListenersMap = {
     error: [],
@@ -97,22 +100,21 @@ export class RetransmittingWebSocket {
     maxUnacknowledgedMessages: number
     maxUnacknowledgedTimeMs: number
     closeTimeoutMs: number
+    reconnectIntervalMs: number
+    webSocketFactory?: () => WebSocketLike
   }
 
-  constructor(
-    config?: Partial<{
-      maxUnacknowledgedBufferSizeBytes: number
-      maxUnacknowledgedMessages: number
-      maxUnacknowledgedTimeMs: number
-      closeTimeoutMs: number
-    }>,
-  ) {
+  constructor(config?: Partial<RetransmittingWebSocket['config']>) {
     this.config = {
       maxUnacknowledgedBufferSizeBytes: defaultMaxBufferSizeBytes,
       maxUnacknowledgedMessages: defaultMaxUnacknowledgedMessages,
       maxUnacknowledgedTimeMs: defaultMaxTimeMs,
       closeTimeoutMs: defaultCloseTimeoutMs,
+      reconnectIntervalMs: defaultReconnectIntervalMs,
       ...config,
+    }
+    if (this.config.webSocketFactory) {
+      this.useWebSocket(this.config.webSocketFactory())
     }
   }
 
@@ -182,15 +184,13 @@ export class RetransmittingWebSocket {
    * Closes the WebSocket connection or connection attempt, if any. If the connection is already
    * CLOSED, this method does nothing
    */
-  public close(code = 1000, reason?: string): void {
+  close(code = 1000, reason?: string): void {
     this.pendingCloseEvent = new Events.CloseEvent(code, reason, this)
+    this.closeAcknowledged = false
     const closeHeader = new Uint32Array([RETRANSMIT_MSG_TYPE.CLOSE])
-    const closeMessageBody = JSON.stringify({ code, reason })
     this.pendingAckMessages.push(closeHeader)
-    this.pendingAckMessages.push(closeMessageBody)
     if (this.ws && this.ws.readyState === ReadyState.OPEN) {
       this.ws.send(closeHeader)
-      this.ws.send(closeMessageBody)
     }
     this.ensureClosedTimeoutTask(this.pendingCloseEvent)
     this._readyState = ReadyState.CLOSING
@@ -247,21 +247,21 @@ export class RetransmittingWebSocket {
 
   useWebSocket(webSocket: WebSocketLike): void {
     if (this.ws) {
-      this.removeListeners()
+      this.removeInternalWebSocketListeners()
     }
     this.ws = webSocket
     if (
       (this._readyState === ReadyState.CONNECTING || this._readyState === ReadyState.OPEN) &&
       this.ws.readyState === ReadyState.OPEN
     ) {
-      this.handleOpen(new Events.Event('open', this))
+      this.handleInternalWebSocketOpen(new Events.Event('open', this))
     } else if (this.ws.readyState === ReadyState.CLOSED || this.ws.readyState === ReadyState.CLOSING) {
       throw new Error('WebSocket already closed or closing.')
     }
-    this.addListeners()
+    this.addInternalWebSocketListeners()
   }
 
-  private handleOpen(event: Events.Event) {
+  private handleInternalWebSocketOpen(event: Events.Event) {
     if (this.ws === undefined) {
       throw new Error('BUG. Received open but no websocket was present.')
     }
@@ -281,6 +281,7 @@ export class RetransmittingWebSocket {
 
     // only send out open event once after first OPEN
     if (this._readyState === ReadyState.CONNECTING) {
+      this.pendingErrorEvent = undefined
       this._readyState = ReadyState.OPEN
       if (this.onopen) {
         this.onopen(event)
@@ -289,7 +290,7 @@ export class RetransmittingWebSocket {
     }
   }
 
-  private handleMessage(event: MessageEvent) {
+  private handleInternalWebSocketMessage(event: MessageEvent) {
     let processData = false
     if (this.receivedHeader === undefined) {
       this.receivedHeader = event.data as ArrayBuffer
@@ -318,10 +319,13 @@ export class RetransmittingWebSocket {
 
     if (typeId === RETRANSMIT_MSG_TYPE.CLOSE_ACK) {
       this.receiveSerial++
+      this.closeAcknowledged = true
       if (this.pendingCloseEvent) {
         this.closeInternal(this.pendingCloseEvent)
+        this.ws?.close(this.pendingCloseEvent.code, this.pendingCloseEvent.reason)
       } else {
-        throw new Error('BUG. Received a CLOSE_ACK with a pending close event.')
+        //console.warn('Received a CLOSE_ACK without a pending close event. Server-Client state out of sync?')
+        throw new Error('BUG. Received a CLOSE_ACK without a pending close event.')
       }
       this.receivedHeader = undefined
       return
@@ -329,17 +333,13 @@ export class RetransmittingWebSocket {
 
     if (typeId === RETRANSMIT_MSG_TYPE.CLOSE) {
       this.receiveSerial++
-      if (processData) {
-        const { code, reason } = JSON.parse(event.data as string)
-        this.removeListeners()
-        const closeAckMessage = new Uint32Array([RETRANSMIT_MSG_TYPE.CLOSE_ACK])
-        this.pendingAckMessages.push(closeAckMessage)
-        if (this.ws && this.ws.readyState === ReadyState.OPEN) {
-          this.ws.send(closeAckMessage)
-        }
-        this.closeInternal(new Events.CloseEvent(code, reason, this))
-        this.receivedHeader = undefined
+      const closeAckMessage = new Uint32Array([RETRANSMIT_MSG_TYPE.CLOSE_ACK])
+      this.pendingAckMessages.push(closeAckMessage)
+      if (this.ws && this.ws.readyState === ReadyState.OPEN) {
+        this.ws.send(closeAckMessage)
       }
+      this.closing()
+      this.receivedHeader = undefined
       return
     }
 
@@ -371,24 +371,37 @@ export class RetransmittingWebSocket {
     }
   }
 
-  private handleError(event: Events.ErrorEvent) {
-    if (this.onerror) {
-      this.onerror(event)
-    }
-    this.listeners.error.forEach((listener) => callEventListener(event, listener))
+  private handleInternalWebSocketError(event: Events.ErrorEvent) {
+    this.pendingErrorEvent = event
+  }
+
+  private closing() {
+    this._readyState = ReadyState.CLOSING
+    this.cancelClosedTimeoutTask()
   }
 
   private closeInternal(event: Events.CloseEvent) {
+    if (this.readyState !== ReadyState.CLOSING) {
+      throw new Error('BUG. Ready state must be CLOSING before transitioning to CLOSED')
+    }
     if (this._readyState === ReadyState.CLOSED) {
       throw new Error('BUG. Already closed.')
     }
     this.cancelClosedTimeoutTask()
     this._readyState = ReadyState.CLOSED
+    if (this.pendingErrorEvent) {
+      const pendingErrorEvent = this.pendingErrorEvent
+      if (this.onerror) {
+        this.onerror(pendingErrorEvent)
+      }
+      this.listeners.error.forEach((listener) => callEventListener(pendingErrorEvent, listener))
+    }
+
     if (this.onclose) {
       this.onclose(event)
     }
     this.listeners.close.forEach((listener) => callEventListener(event, listener))
-    this.removeListeners()
+    this.removeInternalWebSocketListeners()
   }
 
   private ensureClosedTimeoutTask(event: Events.CloseEvent) {
@@ -397,6 +410,7 @@ export class RetransmittingWebSocket {
     }
     this.closedTimeoutTask = setTimeout(() => {
       this.closedTimeoutTask = undefined
+      this._readyState = ReadyState.CLOSING
       this.closeInternal(event)
     }, this.config.closeTimeoutMs)
   }
@@ -408,30 +422,42 @@ export class RetransmittingWebSocket {
     }
   }
 
-  private handleClose(event: Events.CloseEvent) {
-    this.ensureClosedTimeoutTask(event)
+  private handleInternalWebSocketClose(event: Events.CloseEvent) {
+    if (
+      this.readyState === ReadyState.CONNECTING ||
+      this.readyState === ReadyState.OPEN ||
+      this.closeAcknowledged === false
+    ) {
+      if (this.config.webSocketFactory) {
+        const webSocketFactory = this.config.webSocketFactory
+        setTimeout(() => this.useWebSocket(webSocketFactory()), this.config.reconnectIntervalMs)
+      }
+      this.ensureClosedTimeoutTask(event)
+    } else if (this._readyState === ReadyState.CLOSING) {
+      this.closeInternal(event)
+    }
   }
 
-  private removeListeners() {
+  private removeInternalWebSocketListeners() {
     if (!this.ws) {
       return
     }
-    this.ws.removeEventListener('open', this.handleOpen.bind(this))
-    this.ws.removeEventListener('close', this.handleClose.bind(this))
-    this.ws.removeEventListener('message', this.handleMessage.bind(this))
+    this.ws.removeEventListener('open', this.handleInternalWebSocketOpen.bind(this))
+    this.ws.removeEventListener('close', this.handleInternalWebSocketClose.bind(this))
+    this.ws.removeEventListener('message', this.handleInternalWebSocketMessage.bind(this))
     // @ts-ignore
-    this.ws.removeEventListener('error', this.handleError.bind(this))
+    this.ws.removeEventListener('error', this.handleInternalWebSocketError.bind(this))
   }
 
-  private addListeners() {
+  private addInternalWebSocketListeners() {
     if (!this.ws) {
       return
     }
-    this.ws.addEventListener('open', this.handleOpen.bind(this))
-    this.ws.addEventListener('close', this.handleClose.bind(this))
-    this.ws.addEventListener('message', this.handleMessage.bind(this))
+    this.ws.addEventListener('open', this.handleInternalWebSocketOpen.bind(this))
+    this.ws.addEventListener('close', this.handleInternalWebSocketClose.bind(this))
+    this.ws.addEventListener('message', this.handleInternalWebSocketMessage.bind(this))
     // @ts-ignore
-    this.ws.addEventListener('error', this.handleError.bind(this))
+    this.ws.addEventListener('error', this.handleInternalWebSocketError.bind(this))
   }
 
   private sendAck() {
