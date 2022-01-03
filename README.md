@@ -1,27 +1,30 @@
 # Retransmitting-WebSocket
-A tiny zero dependency wrapper around a WebSocket to ensure no messages are lost after a network failure. This is useful if you are dealing with a stateful/mutable protocol over network.
+A tiny zero dependency wrapper around a WebSocket to ensure no messages are lost after a network failure. 
+This is useful if you are dealing with a stateful/mutable protocol over network.
 Retransmitting-WebSocket ensures messages do not get lost nor are they sent or received multiple times.
-
-Retransmit does not handle reconnecting for you. Use something like [ReconnectingWebsocket](https://github.com/pladaria/reconnecting-websocket#readme) and simply pass it to RetransmittingWebSocket.
+Retransmit also handles reconnecting for you.
 
 This project was created for use in [Greenfield](https://github.com/udevbe/greenfield)
 
 # Usage
-Both sides need to wrap their `WebSocket` in a `RetransmittingWebSocket`.
+Both sides need to wrap their `WebSocket` in a `RetransmittingWebSocket`. This `RetransmittingWebSocket` is stateful so make sure
+that the same 2 are talking to each other on reconnect.
 ```typescript
 import ReconnectingWebSocket from 'reconnecting-websocket'
 import { RetransmittingWebSocket } from 'retransmit.js'
 
-// options are optional
+// all options are optional
 const retransmittingWebSocket = new RetransmittingWebSocket({
   maxUnacknowledgedBufferSizeBytes: 100000, // Maximum cummulative size of all received messages before we confirm reception.
   maxUnacknowledgedMessages: 100, // Maximum cardinal size of all received messages before we confirm reception.
   maxUnacknowledgedTimeMs: 10000, // Time after last messages before we confirm reception.
-  closeTimeoutMs: 60000, // Maximum time after network failure before we consider the connection closed.
+  closeTimeoutMs: 1500000, // Maximum time after network failure before we consider the connection closed.
+  reconnectIntervalMs: 3000, // Reconnection interval. Time to wait in milliseconds before trying to reconnect.
+  webSocketFactory: () => { new WebSocket(myURL) } // Function to use for creating a new web socket when reconnecting.
 })
 
 // No need to make ReconnectingWebSocket queue messages, RetransmittingWebSocket will take care of it.
-retransmittingWebSocket.useWebSocket(new ReconnectingWebSocket('ws://my.site.com'), [], { maxEnqueuedMessages: 0 }) // .
+retransmittingWebSocket.useWebSocket(new WebSocket('ws://my.site.com')) // .
 //☝️ The used WebSocket can be swapped on the fly. This is required server-side so you can use a new incoming 
 // WebSocket instance each time the old one is disconnected. The only requirement is that the other side keeps using the same 
 // retransmittingWebSocket object.
