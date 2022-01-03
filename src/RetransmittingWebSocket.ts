@@ -185,6 +185,10 @@ export class RetransmittingWebSocket {
    * CLOSED, this method does nothing
    */
   close(code = 1000, reason?: string): void {
+    if (this.readyState === ReadyState.CLOSED || this.readyState === ReadyState.CLOSED) {
+      console.warn('Trying close websocket that was already closed or closing.')
+      return
+    }
     this.pendingCloseEvent = new Events.CloseEvent(code, reason, this)
     this.closeAcknowledged = false
     const closeHeader = new Uint32Array([RETRANSMIT_MSG_TYPE.CLOSE])
@@ -381,11 +385,11 @@ export class RetransmittingWebSocket {
   }
 
   private closeInternal(event: Events.CloseEvent) {
+    if (this.readyState === ReadyState.CLOSED) {
+      return
+    }
     if (this.readyState !== ReadyState.CLOSING) {
       throw new Error('BUG. Ready state must be CLOSING before transitioning to CLOSED')
-    }
-    if (this._readyState === ReadyState.CLOSED) {
-      throw new Error('BUG. Already closed.')
     }
     this.cancelClosedTimeoutTask()
     this._readyState = ReadyState.CLOSED
@@ -433,7 +437,7 @@ export class RetransmittingWebSocket {
         setTimeout(() => this.useWebSocket(webSocketFactory()), this.config.reconnectIntervalMs)
       }
       this.ensureClosedTimeoutTask(event)
-    } else if (this._readyState === ReadyState.CLOSING) {
+    } else if (this.readyState === ReadyState.CLOSING) {
       this.closeInternal(event)
     }
   }
