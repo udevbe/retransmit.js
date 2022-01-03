@@ -18,8 +18,8 @@ export const enum RETRANSMIT_MSG_TYPE {
 export const defaultMaxBufferSizeBytes = 100000
 export const defaultMaxUnacknowledgedMessages = 100
 export const defaultMaxTimeMs = 10000
-export const defaultCloseTimeoutMs = 60000
-export const defaultReconnectIntervalMs = 250
+export const defaultCloseTimeoutMs = 1500000
+export const defaultReconnectIntervalMs = 3000
 
 export type ListenersMap = {
   error: Array<Events.WebSocketEventListenerMap['error']>
