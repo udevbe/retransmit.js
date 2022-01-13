@@ -1,2 +1,8 @@
-export { RetransmittingWebSocket, WebSocketLike } from './RetransmittingWebSocket'
-export { ErrorEventLike, EventLike, CloseEventLike, MessageEventLike } from './events'
+export {
+  RetransmittingWebSocket,
+  WebSocketLike,
+  ErrorEventLike,
+  EventLike,
+  CloseEventLike,
+  MessageEventLike,
+} from './RetransmittingWebSocket'
