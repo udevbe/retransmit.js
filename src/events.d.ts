@@ -1,29 +1,36 @@
-export interface Event {
+export interface EventLike {
   target: any
-  type: string
+  type: 'open' | 'close' | 'error' | 'message'
 }
 
-export interface ErrorEvent extends Event {
+export interface ErrorEventLike extends EventLike {
   error: Error
   message: string
   type: 'error'
 }
 
-export interface CloseEvent extends Event {
+export interface CloseEventLike extends EventLike {
+  type: 'close'
   code: number
   reason: string
   wasClean: boolean
 }
-export interface WebSocketEventMap {
-  close: CloseEvent
-  error: ErrorEvent
-  message: MessageEvent
-  open: Event
+
+export interface MessageEventLike extends EventLike {
+  type: 'message'
+  readonly data: string | ArrayBuffer
+}
+
+interface RetransmittingWebSocketEventMap {
+  close: CloseEventLike
+  error: EventLike
+  message: MessageEventLike
+  open: EventLike
 }
 
 export interface WebSocketEventListenerMap {
-  close: (event: CloseEvent) => void | { handleEvent: (event: CloseEvent) => void }
-  error: (event: ErrorEvent) => void | { handleEvent: (event: ErrorEvent) => void }
-  message: (event: MessageEvent) => void | { handleEvent: (event: MessageEvent) => void }
-  open: (event: Event) => void | { handleEvent: (event: Event) => void }
+  close: (event: CloseEventLike) => void
+  error: (event: ErrorEventLike) => void
+  message: (event: MessageEventLike) => void
+  open: (event: EventLike) => void
 }

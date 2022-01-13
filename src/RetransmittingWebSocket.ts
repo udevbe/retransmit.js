@@ -1,4 +1,11 @@
-import * as Events from './events'
+import {
+  WebSocketEventListenerMap,
+  EventLike,
+  CloseEventLike,
+  ErrorEventLike,
+  MessageEventLike,
+  RetransmittingWebSocketEventMap,
+} from './events'
 
 export const enum ReadyState {
   CONNECTING,
@@ -22,14 +29,14 @@ export const defaultCloseTimeoutMs = 1500000
 export const defaultReconnectIntervalMs = 3000
 
 export type ListenersMap = {
-  error: Array<Events.WebSocketEventListenerMap['error']>
-  message: Array<Events.WebSocketEventListenerMap['message']>
-  open: Array<Events.WebSocketEventListenerMap['open']>
-  close: Array<Events.WebSocketEventListenerMap['close']>
+  error: Array<WebSocketEventListenerMap['error']>
+  message: Array<WebSocketEventListenerMap['message']>
+  open: Array<WebSocketEventListenerMap['open']>
+  close: Array<WebSocketEventListenerMap['close']>
 }
 
 export type WebSocketLike = {
-  binaryType: BinaryType
+  binaryType: string
   url: string
   extensions: string
   protocol: string
@@ -37,13 +44,19 @@ export type WebSocketLike = {
   readyState: number
   close(code: number, reason: string | undefined): void
   send(message: ArrayBufferLike | string): void
-  removeEventListener(name: string, eventListener: (event: any) => void): void
-  addEventListener(name: string, eventListener: (event: any) => void): void
+  removeEventListener<T extends keyof WebSocketEventListenerMap>(
+    name: T,
+    eventListener: WebSocketEventListenerMap[T],
+  ): void
+  addEventListener<T extends keyof RetransmittingWebSocketEventMap>(
+    name: T,
+    eventListener: WebSocketEventListenerMap[T],
+  ): void
 }
 
-function callEventListener<T extends keyof Events.WebSocketEventListenerMap>(
-  event: Events.WebSocketEventMap[T],
-  listener: Events.WebSocketEventListenerMap[T],
+function callEventListener<T extends keyof WebSocketEventListenerMap>(
+  event: RetransmittingWebSocketEventMap[T],
+  listener: WebSocketEventListenerMap[T],
 ) {
   if ('handleEvent' in listener) {
     // @ts-ignore
@@ -55,24 +68,23 @@ function callEventListener<T extends keyof Events.WebSocketEventListenerMap>(
 }
 
 export class RetransmittingWebSocket {
-  private _binaryType: BinaryType = 'blob'
   /**
    * An event listener to be called when the WebSocket connection's readyState changes to CLOSED
    */
-  onclose: ((event: Events.CloseEvent) => void) | null = null
+  onclose: ((event: CloseEventLike) => void) | null = null
   /**
    * An event listener to be called when an error occurs
    */
-  onerror: ((event: Events.ErrorEvent) => void) | null = null
+  onerror: ((event: ErrorEventLike) => void) | null = null
   /**
    * An event listener to be called when a message is received from the server
    */
-  onmessage: ((event: MessageEvent) => void) | null = null
+  onmessage: ((event: MessageEventLike) => void) | null = null
   /**
    * An event listener to be called when the WebSocket connection's readyState changes to OPEN;
    * this indicates that the connection is ready to send and receive data
    */
-  onopen: ((event: Events.Event) => void) | null = null
+  onopen: ((event: EventLike) => void) | null = null
 
   private pendingAckMessages: (ArrayBufferLike | string)[] = []
   private receiveSerial = 0
@@ -84,8 +96,8 @@ export class RetransmittingWebSocket {
   private closedTimeoutTask?: ReturnType<typeof setTimeout>
   private ws?: WebSocketLike
   private receivedHeader?: ArrayBuffer
-  private pendingCloseEvent?: Events.CloseEvent
-  private pendingErrorEvent?: Events.ErrorEvent
+  private pendingCloseEvent?: CloseEventLike
+  private pendingErrorEvent?: ErrorEventLike
   private closeAcknowledged?: boolean
 
   private listeners: ListenersMap = {
@@ -118,12 +130,17 @@ export class RetransmittingWebSocket {
     }
   }
 
-  get binaryType(): BinaryType {
-    return this.ws ? this.ws.binaryType : this._binaryType
+  get binaryType(): 'arraybuffer' {
+    if (this.ws) {
+      if (this.ws.binaryType !== 'arraybuffer') {
+        throw new Error('Only arraybuffer is supported as websocket binary type')
+      }
+      return this.ws.binaryType
+    }
+    return 'arraybuffer'
   }
 
-  set binaryType(value: BinaryType) {
-    this._binaryType = value
+  set binaryType(value: 'arraybuffer') {
     if (this.ws) {
       this.ws.binaryType = value
     }
@@ -139,8 +156,6 @@ export class RetransmittingWebSocket {
     const bytes = this.pendingAckMessages.reduce((acc, message) => {
       if (typeof message === 'string') {
         acc += message.length // not byte size
-      } else if (message instanceof Blob) {
-        acc += message.size
       } else {
         acc += message.byteLength
       }
@@ -184,12 +199,19 @@ export class RetransmittingWebSocket {
    * Closes the WebSocket connection or connection attempt, if any. If the connection is already
    * CLOSED, this method does nothing
    */
-  close(code = 1000, reason?: string): void {
+  close(code = 1000, reason = ''): void {
     if (this.readyState === ReadyState.CLOSED || this.readyState === ReadyState.CLOSED) {
       console.warn('Trying close websocket that was already closed or closing.')
       return
     }
-    this.pendingCloseEvent = new Events.CloseEvent(code, reason, this)
+    this.pendingCloseEvent = {
+      type: 'close',
+      code,
+      reason,
+      target: this,
+      wasClean: true,
+    }
+
     this.closeAcknowledged = false
     const closeHeader = new Uint32Array([RETRANSMIT_MSG_TYPE.CLOSE])
     this.pendingAckMessages.push(closeHeader)
@@ -216,9 +238,9 @@ export class RetransmittingWebSocket {
   /**
    * Register an event handler of a specific event type
    */
-  public addEventListener<T extends keyof Events.WebSocketEventListenerMap>(
+  public addEventListener<T extends keyof WebSocketEventListenerMap>(
     type: T,
-    listener: Events.WebSocketEventListenerMap[T],
+    listener: WebSocketEventListenerMap[T],
   ): void {
     if (this.listeners[type]) {
       // @ts-ignore
@@ -226,10 +248,11 @@ export class RetransmittingWebSocket {
     }
   }
 
-  public dispatchEvent(event: Events.Event): boolean {
-    const listeners = this.listeners[event.type as keyof Events.WebSocketEventListenerMap]
+  public dispatchEvent(event: EventLike): boolean {
+    const listeners = this.listeners[event.type]
     if (listeners) {
       for (const listener of listeners) {
+        // @ts-ignore
         callEventListener(event, listener)
       }
     }
@@ -239,9 +262,9 @@ export class RetransmittingWebSocket {
   /**
    * Removes an event listener
    */
-  public removeEventListener<T extends keyof Events.WebSocketEventListenerMap>(
+  public removeEventListener<T extends keyof WebSocketEventListenerMap>(
     type: T,
-    listener: Events.WebSocketEventListenerMap[T],
+    listener: WebSocketEventListenerMap[T],
   ): void {
     if (this.listeners[type]) {
       // @ts-ignore
@@ -254,18 +277,22 @@ export class RetransmittingWebSocket {
       this.removeInternalWebSocketListeners()
     }
     this.ws = webSocket
+    this.ws.binaryType = 'arraybuffer'
     if (
       (this._readyState === ReadyState.CONNECTING || this._readyState === ReadyState.OPEN) &&
       this.ws.readyState === ReadyState.OPEN
     ) {
-      this.handleInternalWebSocketOpen(new Events.Event('open', this))
+      this.handleInternalWebSocketOpen({
+        type: 'open',
+        target: this,
+      })
     } else if (this.ws.readyState === ReadyState.CLOSED || this.ws.readyState === ReadyState.CLOSING) {
       throw new Error('WebSocket already closed or closing.')
     }
     this.addInternalWebSocketListeners()
   }
 
-  private handleInternalWebSocketOpen(event: Events.Event) {
+  private handleInternalWebSocketOpen(event: EventLike) {
     if (this.ws === undefined) {
       throw new Error('BUG. Received open but no websocket was present.')
     }
@@ -273,7 +300,6 @@ export class RetransmittingWebSocket {
     if (this._readyState !== ReadyState.CLOSING) {
       this.cancelClosedTimeoutTask()
     }
-    this.ws.binaryType = this._binaryType
 
     // send enqueued messages (messages sent before websocket open event)
     if (this.ws && this.ws.readyState === ReadyState.OPEN) {
@@ -294,7 +320,7 @@ export class RetransmittingWebSocket {
     }
   }
 
-  private handleInternalWebSocketMessage(event: MessageEvent) {
+  private handleInternalWebSocketMessage(event: MessageEventLike) {
     let processData = false
     if (this.receivedHeader === undefined) {
       this.receivedHeader = event.data as ArrayBuffer
@@ -375,7 +401,7 @@ export class RetransmittingWebSocket {
     }
   }
 
-  private handleInternalWebSocketError(event: Events.ErrorEvent) {
+  private handleInternalWebSocketError(event: ErrorEventLike) {
     this.pendingErrorEvent = event
   }
 
@@ -384,7 +410,7 @@ export class RetransmittingWebSocket {
     this.cancelClosedTimeoutTask()
   }
 
-  private closeInternal(event: Events.CloseEvent) {
+  private closeInternal(event: CloseEventLike) {
     if (this.readyState === ReadyState.CLOSED) {
       return
     }
@@ -408,7 +434,7 @@ export class RetransmittingWebSocket {
     this.removeInternalWebSocketListeners()
   }
 
-  private ensureClosedTimeoutTask(event: Events.CloseEvent) {
+  private ensureClosedTimeoutTask(event: CloseEventLike) {
     if (this._readyState === ReadyState.CLOSING || this._readyState === ReadyState.CLOSED || this.closedTimeoutTask) {
       return
     }
@@ -426,7 +452,7 @@ export class RetransmittingWebSocket {
     }
   }
 
-  private handleInternalWebSocketClose(event: Events.CloseEvent) {
+  private handleInternalWebSocketClose(event: CloseEventLike) {
     if (
       this.readyState === ReadyState.CONNECTING ||
       this.readyState === ReadyState.OPEN ||
