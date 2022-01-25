@@ -1,6 +1,6 @@
 {
   "name": "retransmitting-websocket",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "A generic higher level wrapper to ensure state is retransmitted after network failure",
   "main": "dist/index.js",
   "files": [
