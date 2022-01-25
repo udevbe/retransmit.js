@@ -228,7 +228,7 @@ export class RetransmittingWebSocket {
    * CLOSED, this method does nothing
    */
   close(code = 1000, reason = ''): void {
-    if (this.readyState === ReadyState.CLOSED || this.readyState === ReadyState.CLOSED) {
+    if (this.readyState === ReadyState.CLOSED || this.readyState === ReadyState.CLOSING) {
       console.warn('Trying close websocket that was already closed or closing.')
       return
     }
