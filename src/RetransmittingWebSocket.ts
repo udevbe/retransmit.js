@@ -21,14 +21,14 @@ export interface MessageEventLike extends EventLike {
   readonly data: string | ArrayBuffer
 }
 
-interface RetransmittingWebSocketEventMap {
+export interface RetransmittingWebSocketEventMap {
   close: CloseEventLike
   error: EventLike
   message: MessageEventLike
   open: EventLike
 }
 
-interface WebSocketEventListenerMap {
+export interface WebSocketEventListenerMap {
   close: (event: CloseEventLike) => void
   error: (event: ErrorEventLike) => void
   message: (event: MessageEventLike) => void
@@ -64,13 +64,9 @@ export type ListenersMap = {
 }
 
 export type WebSocketLike = {
-  binaryType: string
-  url: string
-  extensions: string
-  protocol: string
-  bufferedAmount: number
+  readonly binaryType: string
   readyState: number
-  close(code: number, reason: string | undefined): void
+  close(code?: number, reason?: string): void
   send(message: ArrayBufferLike | string): void
   removeEventListener<T extends keyof WebSocketEventListenerMap>(
     name: T,
@@ -95,7 +91,7 @@ function callEventListener<T extends keyof WebSocketEventListenerMap>(
   }
 }
 
-export class RetransmittingWebSocket {
+export class RetransmittingWebSocket implements WebSocketLike {
   /**
    * An event listener to be called when the WebSocket connection's readyState changes to CLOSED
    */
@@ -144,6 +140,8 @@ export class RetransmittingWebSocket {
     webSocketFactory?: () => WebSocketLike
   }
 
+  readonly binaryType = 'arraybuffer'
+
   constructor(config?: Partial<RetransmittingWebSocket['config']>) {
     this.config = {
       maxUnacknowledgedBufferSizeBytes: defaultMaxBufferSizeBytes,
@@ -157,70 +155,11 @@ export class RetransmittingWebSocket {
       this.useWebSocket(this.config.webSocketFactory())
     }
   }
-
-  get binaryType(): 'arraybuffer' {
-    if (this.ws) {
-      if (this.ws.binaryType !== 'arraybuffer') {
-        throw new Error('Only arraybuffer is supported as websocket binary type')
-      }
-      return this.ws.binaryType
-    }
-    return 'arraybuffer'
-  }
-
-  set binaryType(value: 'arraybuffer') {
-    if (this.ws) {
-      this.ws.binaryType = value
-    }
-  }
-
-  /**
-   * The number of bytes of data that have been queued using calls to send() but not yet
-   * transmitted to the network. This value resets to zero once all queued data has been sent.
-   * This value does not reset to zero when the connection is closed; if you keep calling send(),
-   * this will continue to climb. Read only
-   */
-  get bufferedAmount(): number {
-    const bytes = this.pendingAckMessages.reduce((acc, message) => {
-      if (typeof message === 'string') {
-        acc += message.length // not byte size
-      } else {
-        acc += message.byteLength
-      }
-      return acc
-    }, 0)
-    return bytes + (this.ws ? this.ws.bufferedAmount : 0)
-  }
-
-  /**
-   * The extensions selected by the server. This is currently only the empty string or a list of
-   * extensions as negotiated by the connection
-   */
-  get extensions(): string {
-    return this.ws?.extensions ?? ''
-  }
-
-  /**
-   * A string indicating the name of the sub-protocol the server selected;
-   * this will be one of the strings specified in the protocols parameter when creating the
-   * WebSocket object
-   */
-  get protocol(): string {
-    return this.ws?.protocol ?? ''
-  }
-
   /**
    * The current state of the connection; this is one of the Ready state constants
    */
   get readyState(): number {
     return this._readyState
-  }
-
-  /**
-   * The URL as resolved by the constructor
-   */
-  get url(): string {
-    return this.ws?.url ?? ''
   }
 
   /**
@@ -301,11 +240,13 @@ export class RetransmittingWebSocket {
   }
 
   useWebSocket(webSocket: WebSocketLike): void {
+    if (webSocket.binaryType !== 'arraybuffer') {
+      throw new Error('only arraybuffer websockets are supported')
+    }
     if (this.ws) {
       this.removeInternalWebSocketListeners()
     }
     this.ws = webSocket
-    this.ws.binaryType = 'arraybuffer'
     if (
       (this._readyState === ReadyState.CONNECTING || this._readyState === ReadyState.OPEN) &&
       this.ws.readyState === ReadyState.OPEN
@@ -351,6 +292,7 @@ export class RetransmittingWebSocket {
   private handleInternalWebSocketMessage(event: MessageEventLike) {
     let processData = false
     if (this.receivedHeader === undefined) {
+      // copy data to make sure no modifications happen to it (also required for use with uWebsocket library)
       this.receivedHeader = event.data as ArrayBuffer
     } else {
       processData = true

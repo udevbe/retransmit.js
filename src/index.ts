@@ -5,4 +5,7 @@ export {
   EventLike,
   CloseEventLike,
   MessageEventLike,
+  ReadyState,
+  RetransmittingWebSocketEventMap,
+  WebSocketEventListenerMap,
 } from './RetransmittingWebSocket'
