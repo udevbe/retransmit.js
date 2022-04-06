@@ -1,6 +1,6 @@
 {
   "name": "retransmitting-websocket",
-  "version": "0.0.12",
+  "version": "1.0.0-alpha.0",
   "description": "A generic higher level wrapper to ensure state is retransmitted after network failure",
   "main": "dist/index.js",
   "files": [
@@ -13,7 +13,7 @@
   "private": false,
   "scripts": {
     "build": "tsc",
-    "test": "jest --coverage"
+    "test": "jest --coverage --detectOpenHandles"
   },
   "devDependencies": {
     "@types/jest": "^27.0.1",

@@ -7,12 +7,15 @@ import { RetransmittingWebSocket, RETRANSMIT_MSG_TYPE, ReadyState } from './Retr
 
 describe('WebSocketRetransmitter', () => {
   function openRetransmittingWebSocket() {
-    retransmittingWebSocket.useWebSocket(new WebSocket(URL))
+    const webSocket = new WebSocket(URL)
+    webSocket.binaryType = 'arraybuffer'
+    retransmittingWebSocket.useWebSocket(webSocket)
   }
 
   async function useNewOpenWebSocket() {
     const openWebSocket = await new Promise<WebSocket>((resolve) => {
       const webSocket = new WebSocket(URL)
+      webSocket.binaryType = 'arraybuffer'
       return (webSocket.onopen = () => resolve(webSocket))
     })
     retransmittingWebSocket.useWebSocket(openWebSocket)
@@ -46,7 +49,6 @@ describe('WebSocketRetransmitter', () => {
 
   function createRetransmittingWebSocket(config?: ConstructorParameters<typeof RetransmittingWebSocket>[0]) {
     retransmittingWebSocket = new RetransmittingWebSocket(config)
-    retransmittingWebSocket.binaryType = 'arraybuffer'
     receiveCallback = jest.fn()
     retransmittingWebSocket.onmessage = (event) => {
       receiveCallback(typeof event.data === 'string' ? event.data : new Uint8Array(event.data as ArrayBuffer))

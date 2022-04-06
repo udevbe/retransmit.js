@@ -119,7 +119,7 @@ export class RetransmittingWebSocket implements WebSocketLike {
   private unacknowledgedTimoutTask?: ReturnType<typeof setTimeout>
   private closedTimeoutTask?: ReturnType<typeof setTimeout>
   private ws?: WebSocketLike
-  private receivedHeader?: ArrayBuffer
+  private receivedHeader?: { typeId: number; data?: number }
   private pendingCloseEvent?: CloseEventLike
   private pendingErrorEvent?: ErrorEventLike
   private closeAcknowledged?: boolean
@@ -293,21 +293,28 @@ export class RetransmittingWebSocket implements WebSocketLike {
     let processData = false
     if (this.receivedHeader === undefined) {
       // copy data to make sure no modifications happen to it (also required for use with uWebsocket library)
-      this.receivedHeader = event.data as ArrayBuffer
+      const headerData = event.data as ArrayBuffer
+      this.receivedHeader = {
+        typeId: new Uint32Array(headerData, 0, 1)[0],
+        data:
+          headerData.byteLength > Uint32Array.BYTES_PER_ELEMENT
+            ? new Uint32Array(headerData, Uint32Array.BYTES_PER_ELEMENT, 1)[0]
+            : undefined,
+      }
     } else {
       processData = true
     }
 
-    const typeId = new Uint32Array(this.receivedHeader, 0, 1)[0]
-
-    if (typeId === RETRANSMIT_MSG_TYPE.INITIAL_SERIAL) {
-      this.receiveSerial = new Uint32Array(this.receivedHeader, Uint32Array.BYTES_PER_ELEMENT, 1)[0]
+    if (this.receivedHeader.typeId === RETRANSMIT_MSG_TYPE.INITIAL_SERIAL) {
+      // @ts-ignore
+      this.receiveSerial = this.receivedHeader.data
       this.receivedHeader = undefined
       return
     }
 
-    if (typeId === RETRANSMIT_MSG_TYPE.DATA_ACK) {
-      const sendUntil = new Uint32Array(this.receivedHeader, Uint32Array.BYTES_PER_ELEMENT, 1)[0]
+    if (this.receivedHeader.typeId === RETRANSMIT_MSG_TYPE.DATA_ACK) {
+      // @ts-ignore
+      const sendUntil: number = this.receivedHeader.data
       this.pendingAckMessages = this.pendingAckMessages.slice(
         sendUntil - this.bufferLowestSerial,
         this.pendingAckMessages.length,
@@ -317,7 +324,7 @@ export class RetransmittingWebSocket implements WebSocketLike {
       return
     }
 
-    if (typeId === RETRANSMIT_MSG_TYPE.CLOSE_ACK) {
+    if (this.receivedHeader.typeId === RETRANSMIT_MSG_TYPE.CLOSE_ACK) {
       this.receiveSerial++
       this.closeAcknowledged = true
       if (this.pendingCloseEvent) {
@@ -331,7 +338,7 @@ export class RetransmittingWebSocket implements WebSocketLike {
       return
     }
 
-    if (typeId === RETRANSMIT_MSG_TYPE.CLOSE) {
+    if (this.receivedHeader.typeId === RETRANSMIT_MSG_TYPE.CLOSE) {
       this.receiveSerial++
       const closeAckMessage = new Uint32Array([RETRANSMIT_MSG_TYPE.CLOSE_ACK])
       this.pendingAckMessages.push(closeAckMessage)
@@ -343,7 +350,7 @@ export class RetransmittingWebSocket implements WebSocketLike {
       return
     }
 
-    if (typeId === RETRANSMIT_MSG_TYPE.DATA) {
+    if (this.receivedHeader.typeId === RETRANSMIT_MSG_TYPE.DATA) {
       this.receiveSerial++
       if (processData) {
         if (this.receiveSerial > this.processedSerial) {
